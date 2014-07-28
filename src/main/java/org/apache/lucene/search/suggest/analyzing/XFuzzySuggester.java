@@ -122,7 +122,7 @@ public final class XFuzzySuggester extends XAnalyzingSuggester {
      */
     public XFuzzySuggester(Analyzer indexAnalyzer, Analyzer queryAnalyzer) {
         this(indexAnalyzer, null, queryAnalyzer, EXACT_FIRST | PRESERVE_SEP, 256, -1, DEFAULT_MAX_EDITS, DEFAULT_TRANSPOSITIONS,
-                DEFAULT_NON_FUZZY_PREFIX, DEFAULT_MIN_FUZZY_LENGTH, DEFAULT_UNICODE_AWARE, null, false, 0, SEP_LABEL, PAYLOAD_SEP, END_BYTE, HOLE_CHARACTER);
+                DEFAULT_NON_FUZZY_PREFIX, DEFAULT_MIN_FUZZY_LENGTH, DEFAULT_UNICODE_AWARE, null, false, 0, SEP_LABEL, PAYLOAD_SEP, END_BYTE, HOLE_CHARACTER,new int[]{});
 
     }
 
@@ -153,9 +153,9 @@ public final class XFuzzySuggester extends XAnalyzingSuggester {
      */
     public XFuzzySuggester(Analyzer indexAnalyzer, Automaton queryPrefix, Analyzer queryAnalyzer, int options, int maxSurfaceFormsPerAnalyzedForm, int maxGraphExpansions,
                            int maxEdits, boolean transpositions, int nonFuzzyPrefix, int minFuzzyLength, boolean unicodeAware,
-                           FST<PairOutputs.Pair<Long, BytesRef>> fst, boolean hasPayloads, int maxAnalyzedPathsForOneInput,
-                           int sepLabel, int payloadSep, int endByte, int holeCharacter) {
-        super(indexAnalyzer, queryPrefix, queryAnalyzer, options, maxSurfaceFormsPerAnalyzedForm, maxGraphExpansions, true, fst, hasPayloads, maxAnalyzedPathsForOneInput, sepLabel, payloadSep, endByte, holeCharacter);
+                           FST<PairOutputs.Pair<IntsRef, BytesRef>> fst, boolean hasPayloads, int maxAnalyzedPathsForOneInput,
+                           int sepLabel, int payloadSep, int endByte, int holeCharacter,int[] scalar) {
+        super(indexAnalyzer, queryPrefix, queryAnalyzer, options, maxSurfaceFormsPerAnalyzedForm, maxGraphExpansions, true, fst, hasPayloads, maxAnalyzedPathsForOneInput, sepLabel, payloadSep, endByte, holeCharacter,scalar);
         if (maxEdits < 0 || maxEdits > LevenshteinAutomata.MAXIMUM_SUPPORTED_DISTANCE) {
             throw new IllegalArgumentException("maxEdits must be between 0 and " + LevenshteinAutomata.MAXIMUM_SUPPORTED_DISTANCE);
         }
@@ -174,9 +174,9 @@ public final class XFuzzySuggester extends XAnalyzingSuggester {
     }
 
     @Override
-    protected List<FSTUtil.Path<PairOutputs.Pair<Long,BytesRef>>> getFullPrefixPaths(List<FSTUtil.Path<PairOutputs.Pair<Long,BytesRef>>> prefixPaths,
+    protected List<FSTUtil.Path<PairOutputs.Pair<IntsRef,BytesRef>>> getFullPrefixPaths(List<FSTUtil.Path<PairOutputs.Pair<IntsRef,BytesRef>>> prefixPaths,
                                                                                      Automaton lookupAutomaton,
-                                                                                     FST<PairOutputs.Pair<Long,BytesRef>> fst)
+                                                                                     FST<PairOutputs.Pair<IntsRef,BytesRef>> fst)
             throws IOException {
 
         // TODO: right now there's no penalty for fuzzy/edits,

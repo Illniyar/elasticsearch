@@ -40,6 +40,8 @@ public class CompletionSuggestionContext extends SuggestionSearchContext.Suggest
     private boolean fuzzy = false;
     private boolean fuzzyUnicodeAware = XFuzzySuggester.DEFAULT_UNICODE_AWARE;
     private List<ContextQuery> contextQueries = Collections.emptyList();
+
+    private int[] scalar = null;
     
     public CompletionSuggestionContext(Suggester suggester) {
         super(suggester);
@@ -108,4 +110,9 @@ public class CompletionSuggestionContext extends SuggestionSearchContext.Suggest
     public List<ContextQuery> getContextQueries() {   
         return this.contextQueries;
     }
+
+
+    public int[] getScalar() { return scalar; }
+
+    public void setScalar(int[] scalar) { this.scalar = scalar; }
 }

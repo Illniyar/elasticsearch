@@ -313,9 +313,11 @@ public class Completion090PostingsFormat extends PostingsFormat {
         public abstract LookupFactory load(IndexInput input) throws IOException;
 
         @Override
-        public BytesRef buildPayload(BytesRef surfaceForm, long weight, BytesRef payload) throws IOException {
-            if (weight < -1 || weight > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException("weight must be >= -1 && <= Integer.MAX_VALUE");
+        public BytesRef buildPayload(BytesRef surfaceForm, long[] weights, BytesRef payload) throws IOException {
+            for (long weight : weights){
+                if (weight < -1 || weight > Integer.MAX_VALUE) {
+                    throw new IllegalArgumentException("weight must be >= -1 && <= Integer.MAX_VALUE");
+                }
             }
             for (int i = 0; i < surfaceForm.length; i++) {
                 if (surfaceForm.bytes[i] == UNIT_SEPARATOR) {
@@ -325,7 +327,10 @@ public class Completion090PostingsFormat extends PostingsFormat {
             }
             ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
             OutputStreamDataOutput output = new OutputStreamDataOutput(byteArrayOutputStream);
-            output.writeVLong(weight + 1);
+            output.writeVInt(weights.length);
+            for (long weight :weights) {
+                output.writeVLong(weight + 1);
+            }
             output.writeVInt(surfaceForm.length);
             output.writeBytes(surfaceForm.bytes, surfaceForm.offset, surfaceForm.length);
             output.writeVInt(payload.length);
@@ -339,8 +344,12 @@ public class Completion090PostingsFormat extends PostingsFormat {
         public void parsePayload(BytesRef payload, SuggestPayload ref) throws IOException {
             ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(payload.bytes, payload.offset, payload.length);
             InputStreamDataInput input = new InputStreamDataInput(byteArrayInputStream);
-            ref.weight = input.readVLong() - 1;
             int len = input.readVInt();
+            ref.weights = new long[len];
+            for (int i=0;i<len;i++) {
+                ref.weights[i] = input.readVLong() - 1;
+            }
+            len = input.readVInt();
             ref.surfaceForm.grow(len);
             ref.surfaceForm.length = len;
             input.readBytes(ref.surfaceForm.bytes, ref.surfaceForm.offset, ref.surfaceForm.length);

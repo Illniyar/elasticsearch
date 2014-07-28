@@ -81,6 +81,7 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
         public static final ParseField PRESERVE_POSITION_INCREMENTS = new ParseField("preserve_position_increments");
         public static final String PAYLOADS = "payloads";
         public static final String TYPE = "type";
+        public static final ParseField SCALAR_MAP = new ParseField("scalar_map");
         public static final ParseField MAX_INPUT_LENGTH = new ParseField("max_input_length", "max_input_len");
         // Content field names
         public static final String CONTENT_FIELD_NAME_INPUT = "input";
@@ -97,6 +98,7 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
 
         private boolean preserveSeparators = Defaults.DEFAULT_PRESERVE_SEPARATORS;
         private boolean payloads = Defaults.DEFAULT_HAS_PAYLOADS;
+        private Map<String,Integer> scalarMap = null;
         private boolean preservePositionIncrements = Defaults.DEFAULT_POSITION_INCREMENTS;
         private int maxInputLength = Defaults.DEFAULT_MAX_INPUT_LENGTH;
         private SortedMap<String, ContextMapping> contextMapping = ContextMapping.EMPTY_MAPPING;
@@ -129,6 +131,14 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
             return this;
         }
 
+        public Builder setScalars(String[] scalars) {
+            scalarMap = new HashMap<>(scalars.length);
+            for (int i=0; i < scalars.length;i++) {
+                scalarMap.put(scalars[i],i);
+            }
+            return this;
+        }
+
         public Builder contextMapping(SortedMap<String, ContextMapping> contextMapping) {
             this.contextMapping = contextMapping;
             return this;
@@ -136,8 +146,13 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
 
         @Override
         public CompletionFieldMapper build(Mapper.BuilderContext context) {
+            Map<String,Integer> scalarMap = this.scalarMap;
+            if (scalarMap == null) {
+                scalarMap = new HashMap<>();
+                scalarMap.put("default",0);
+            }
             return new CompletionFieldMapper(buildNames(context), indexAnalyzer, searchAnalyzer, postingsProvider, similarity, payloads,
-                    preserveSeparators, preservePositionIncrements, maxInputLength, multiFieldsBuilder.build(this, context), copyTo, this.contextMapping);
+                    preserveSeparators, preservePositionIncrements, maxInputLength, multiFieldsBuilder.build(this, context), copyTo, this.contextMapping,scalarMap);
         }
 
     }
@@ -173,6 +188,9 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
                     parseMultiField(builder, name, node, parserContext, fieldName, fieldNode);
                 } else if (fieldName.equals(Fields.CONTEXT)) {
                     builder.contextMapping(ContextBuilder.loadMappings(fieldNode));
+                } else if (Fields.SCALAR_MAP.match(fieldName)) {
+                    ArrayList<String> scalarsNode = (ArrayList<String>) fieldNode;
+                    builder.setScalars(scalarsNode.toArray(new String[scalarsNode.size()]));
                 } else {
                     throw new MapperParsingException("Unknown field [" + fieldName + "]");
                 }
@@ -208,13 +226,15 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
     private final boolean preserveSeparators;
     private int maxInputLength;
     private final SortedMap<String, ContextMapping> contextMapping;
+    private Map<String,Integer> scalarMap;
 
     /**
      * 
      * @param contextMappings Configuration of context type. If none should be used set {@link ContextMapping.EMPTY_MAPPING}
      */
     public CompletionFieldMapper(Names names, NamedAnalyzer indexAnalyzer, NamedAnalyzer searchAnalyzer, PostingsFormatProvider postingsProvider, SimilarityProvider similarity, boolean payloads,
-                                 boolean preserveSeparators, boolean preservePositionIncrements, int maxInputLength, MultiFields multiFields, CopyTo copyTo, SortedMap<String, ContextMapping> contextMappings) {
+                                 boolean preserveSeparators, boolean preservePositionIncrements, int maxInputLength, MultiFields multiFields, CopyTo copyTo, SortedMap<String, ContextMapping> contextMappings,
+                                 Map<String,Integer> scalarMap) {
         super(names, 1.0f, Defaults.FIELD_TYPE, null, indexAnalyzer, searchAnalyzer, postingsProvider, null, similarity, null, null, null, multiFields, copyTo);
         analyzingSuggestLookupProvider = new AnalyzingCompletionLookupProvider(preserveSeparators, false, preservePositionIncrements, payloads);
         this.completionPostingsFormatProvider = new CompletionPostingsFormatProvider("completion", postingsProvider, analyzingSuggestLookupProvider);
@@ -223,6 +243,7 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
         this.preservePositionIncrements = preservePositionIncrements;
         this.maxInputLength = maxInputLength;
         this.contextMapping = contextMappings;
+        this.scalarMap = scalarMap;
     }
 
     @Override
@@ -230,6 +251,20 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
         return this.completionPostingsFormatProvider;
     }
 
+    private long parseWeightToken(Token token,XContentParser parser) throws IOException{
+        if (token != XContentParser.Token.VALUE_NUMBER) {
+            throw new ElasticsearchIllegalArgumentException("Weight must be a number, instead was[" + parser.text() + "]");
+        }
+        NumberType numberType = parser.numberType();
+        if (NumberType.LONG != numberType && NumberType.INT != numberType) {
+            throw new ElasticsearchIllegalArgumentException("Weight must be an integer, but was [" + parser.numberValue() + "]");
+        }
+        long weight = parser.longValue();
+        if (weight < 0 || weight > Integer.MAX_VALUE) {
+            throw new ElasticsearchIllegalArgumentException("Weight must be in the interval [0..2147483647], but was [" + weight + "]");
+        }
+        return weight;
+    }
     @Override
     public void parse(ParseContext context) throws IOException {
         XContentParser parser = context.parser();
@@ -237,8 +272,9 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
 
         String surfaceForm = null;
         BytesRef payload = null;
-        long weight = -1;
         List<String> inputs = Lists.newArrayListWithExpectedSize(4);
+        long[] weights = new long[scalarMap.size()];
+        Arrays.fill(weights, -1);
 
         SortedMap<String, ContextConfig> contextConfig = null;
 
@@ -288,23 +324,40 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
                     } else {
                         throw new MapperException("payload doesn't support type " + token);
                     }
-                } else if (token == XContentParser.Token.VALUE_STRING) {
+                } else if (Fields.CONTENT_FIELD_NAME_WEIGHT.equals(currentFieldName)) {
+                    if (token == XContentParser.Token.VALUE_NUMBER) {
+                        weights[0] = parseWeightToken(token,parser);
+                    } else if (token == XContentParser.Token.START_ARRAY) {
+                        int index = 0;
+                        while ((token = parser.nextToken()) != XContentParser.Token.END_ARRAY) {
+                            if (index >= weights.length) {
+                                throw new ElasticsearchIllegalArgumentException("Weight had too many values, expected [" + weights.length + "]");
+                            }
+                            weights[index] = parseWeightToken(token,parser);
+                            index++;
+                        }
+                    } else if (token == Token.START_OBJECT ) {
+                        int weight = 0,index=-1;
+                        String scalarName;
+                        while ((parser.nextToken()) != Token.END_OBJECT) {
+                            scalarName = parser.text();
+                            if (scalarMap.containsKey(scalarName)) {
+                                index = scalarMap.get(scalarName);
+                            } else {
+                                throw new ElasticsearchParseException("Scalar [" + scalarName+ "] was not registered in index creation");
+                            }
+                            token = parser.nextToken();
+                            weights[index] = parseWeightToken(token,parser);
+                        }
+                    } else {
+                        throw new ElasticsearchIllegalArgumentException("Weight is of unknown type [" + token.name() + "]");
+                    }
+                }else if (token == XContentParser.Token.VALUE_STRING) {
                     if (Fields.CONTENT_FIELD_NAME_OUTPUT.equals(currentFieldName)) {
                         surfaceForm = parser.text();
                     }
                     if (Fields.CONTENT_FIELD_NAME_INPUT.equals(currentFieldName)) {
                         inputs.add(parser.text());
-                    }
-                } else if (token == XContentParser.Token.VALUE_NUMBER) {
-                    if (Fields.CONTENT_FIELD_NAME_WEIGHT.equals(currentFieldName)) {
-                        NumberType numberType = parser.numberType();
-                        if (NumberType.LONG != numberType && NumberType.INT != numberType) {
-                            throw new ElasticsearchIllegalArgumentException("Weight must be an integer, but was [" + parser.numberValue() + "]");
-                        }
-                        weight = parser.longValue(); // always parse a long to make sure we don't get the overflow value
-                        if (weight < 0 || weight > Integer.MAX_VALUE) {
-                            throw new ElasticsearchIllegalArgumentException("Weight must be in the interval [0..2147483647], but was [" + weight + "]");
-                        }
                     }
                 } else if (token == XContentParser.Token.START_ARRAY) {
                     if (Fields.CONTENT_FIELD_NAME_INPUT.equals(currentFieldName)) {
@@ -329,12 +382,12 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
         if (surfaceForm == null) { // no surface form use the input
             for (String input : inputs) {
                 BytesRef suggestPayload = analyzingSuggestLookupProvider.buildPayload(new BytesRef(
-                        input), weight, payload);
+                        input), weights, payload);
                 context.doc().add(getCompletionField(ctx, input, suggestPayload));
             }
         } else {
             BytesRef suggestPayload = analyzingSuggestLookupProvider.buildPayload(new BytesRef(
-                    surfaceForm), weight, payload);
+                    surfaceForm), weights, payload);
             for (String input : inputs) {
                 context.doc().add(getCompletionField(ctx, input, suggestPayload));
             }
@@ -346,6 +399,11 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
      */
     public SortedMap<String, ContextMapping> getContextMapping() {
         return contextMapping;
+    }
+
+
+    public Map<String, Integer> getScalarMap() {
+        return scalarMap;
     }
 
     /** @return true if a context mapping has been defined */
@@ -381,9 +439,9 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
         return len;
     }
 
-    public BytesRef buildPayload(BytesRef surfaceForm, long weight, BytesRef payload) throws IOException {
+    public BytesRef buildPayload(BytesRef surfaceForm, long[] weights, BytesRef payload) throws IOException {
         return analyzingSuggestLookupProvider.buildPayload(
-                surfaceForm, weight, payload);
+                surfaceForm, weights, payload);
     }
 
     private static final class SuggestField extends Field {
@@ -419,6 +477,13 @@ public class CompletionFieldMapper extends AbstractFieldMapper<String> {
         builder.field(Fields.PRESERVE_SEPARATORS.getPreferredName(), this.preserveSeparators);
         builder.field(Fields.PRESERVE_POSITION_INCREMENTS.getPreferredName(), this.preservePositionIncrements);
         builder.field(Fields.MAX_INPUT_LENGTH.getPreferredName(), this.maxInputLength);
+
+        String[] scalarArr = new String[this.scalarMap.size()];
+
+        for (Map.Entry<String,Integer> entry :this.scalarMap.entrySet()) {
+            scalarArr[entry.getValue()]= entry.getKey();
+        }
+        builder.field(Fields.SCALAR_MAP.getPreferredName(), Arrays.asList(scalarArr));
         multiFields.toXContent(builder, params);
 
         if(!contextMapping.isEmpty()) {

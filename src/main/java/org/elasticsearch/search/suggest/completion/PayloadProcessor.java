@@ -25,13 +25,13 @@ import java.io.IOException;
 
 interface PayloadProcessor {
 
-    BytesRef buildPayload(BytesRef surfaceForm, long weight, BytesRef payload) throws IOException;
+    BytesRef buildPayload(BytesRef surfaceForm, long[] weights, BytesRef payload) throws IOException;
 
     void parsePayload(BytesRef payload, SuggestPayload ref) throws IOException;
 
     static class SuggestPayload {
         final BytesRef payload = new BytesRef();
-        long weight = 0;
+        long weights[];
         final BytesRef surfaceForm = new BytesRef();
     }
 }

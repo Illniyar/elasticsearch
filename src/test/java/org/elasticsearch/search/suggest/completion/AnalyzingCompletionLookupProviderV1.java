@@ -84,7 +84,7 @@ public class AnalyzingCompletionLookupProviderV1 extends CompletionLookupProvide
         // needs to fixed in the suggester first before it can be supported
         //options |= exactFirst ? XAnalyzingSuggester.EXACT_FIRST : 0;
         prototype = new XAnalyzingSuggester(null,null, null, options, maxSurfaceFormsPerAnalyzedForm, maxGraphExpansions, preservePositionIncrements,
-                null, false, 1, SEP_LABEL, PAYLOAD_SEP, END_BYTE, XAnalyzingSuggester.HOLE_CHARACTER);
+                null, false, 1, SEP_LABEL, PAYLOAD_SEP, END_BYTE, XAnalyzingSuggester.HOLE_CHARACTER,new int[]{});
     }
 
     @Override
@@ -146,7 +146,7 @@ public class AnalyzingCompletionLookupProviderV1 extends CompletionLookupProvide
                          * Here we are done processing the field and we can
                          * buid the FST and write it to disk.
                          */
-                        FST<Pair<Long, BytesRef>> build = builder.build();
+                        FST<Pair<IntsRef, BytesRef>> build = builder.build();
                         assert build != null || docCount == 0 : "the FST is null but docCount is != 0 actual value: [" + docCount + "]";
                         /*
                          * it's possible that the FST is null if we have 2 segments that get merged
@@ -191,7 +191,7 @@ public class AnalyzingCompletionLookupProviderV1 extends CompletionLookupProvide
         @Override
         public void addPosition(int position, BytesRef payload, int startOffset, int endOffset) throws IOException {
             analyzingSuggestLookupProvider.parsePayload(payload, spare);
-            builder.addSurface(spare.surfaceForm, spare.payload, spare.weight);
+            builder.addSurface(spare.surfaceForm, spare.payload, spare.weights);
             // multi fields have the same surface form so we sum up here
             maxAnalyzedPathsForOneInput = Math.max(maxAnalyzedPathsForOneInput, position + 1);
         }
@@ -226,8 +226,8 @@ public class AnalyzingCompletionLookupProviderV1 extends CompletionLookupProvide
         long sizeInBytes = 0;
         for (Map.Entry<Long, String> entry : meta.entrySet()) {
             input.seek(entry.getKey());
-            FST<Pair<Long, BytesRef>> fst = new FST<>(input, new PairOutputs<>(
-                    PositiveIntOutputs.getSingleton(), ByteSequenceOutputs.getSingleton()));
+            FST<Pair<IntsRef, BytesRef>> fst = new FST<>(input, new PairOutputs<>(
+                    IntSequenceOutputs.getSingleton(), ByteSequenceOutputs.getSingleton()));
             int maxAnalyzedPathsForOneInput = input.readVInt();
             int maxSurfaceFormsPerAnalyzedForm = input.readVInt();
             int maxGraphExpansions = input.readInt();
@@ -258,13 +258,13 @@ public class AnalyzingCompletionLookupProviderV1 extends CompletionLookupProvide
                             suggestionContext.getFuzzyEditDistance(), suggestionContext.isFuzzyTranspositions(),
                             suggestionContext.getFuzzyPrefixLength(), suggestionContext.getFuzzyMinLength(), false,
                             analyzingSuggestHolder.fst, analyzingSuggestHolder.hasPayloads,
-                            analyzingSuggestHolder.maxAnalyzedPathsForOneInput, SEP_LABEL, PAYLOAD_SEP, END_BYTE, XAnalyzingSuggester.HOLE_CHARACTER);
+                            analyzingSuggestHolder.maxAnalyzedPathsForOneInput, SEP_LABEL, PAYLOAD_SEP, END_BYTE, XAnalyzingSuggester.HOLE_CHARACTER,suggestionContext.getScalar());
                 } else {
                     suggester = new XAnalyzingSuggester(mapper.indexAnalyzer(), queryPrefix, mapper.searchAnalyzer(), flags,
                             analyzingSuggestHolder.maxSurfaceFormsPerAnalyzedForm, analyzingSuggestHolder.maxGraphExpansions,
                             analyzingSuggestHolder.preservePositionIncrements,
                             analyzingSuggestHolder.fst, analyzingSuggestHolder.hasPayloads,
-                            analyzingSuggestHolder.maxAnalyzedPathsForOneInput, SEP_LABEL, PAYLOAD_SEP, END_BYTE, XAnalyzingSuggester.HOLE_CHARACTER);
+                            analyzingSuggestHolder.maxAnalyzedPathsForOneInput, SEP_LABEL, PAYLOAD_SEP, END_BYTE, XAnalyzingSuggester.HOLE_CHARACTER,suggestionContext.getScalar());
                 }
                 return suggester;
             }

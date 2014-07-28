@@ -100,7 +100,7 @@ public class XAnalyzingSuggester extends Lookup {
    *  weights are encoded as costs: (Integer.MAX_VALUE-weight)
    *  surface is the original, unanalyzed form.
    */
-  private FST<Pair<Long,BytesRef>> fst = null;
+  private FST<Pair<IntsRef,BytesRef>> fst = null;
   
   /** 
    * Analyzer that will be used for analyzing suggestions at
@@ -159,6 +159,10 @@ public class XAnalyzingSuggester extends Lookup {
    *  graphs this will always be 1. */
   private int maxAnalyzedPathsForOneInput;
 
+  private int[] scalar;
+
+  private WeightsComparator weightsComparator;
+
   private boolean hasPayloads;
 
   private final int sepLabel;
@@ -183,7 +187,7 @@ public class XAnalyzingSuggester extends Lookup {
    * PRESERVE_SEP, 256, -1)}
    */
   public XAnalyzingSuggester(Analyzer analyzer) {
-    this(analyzer, null, analyzer, EXACT_FIRST | PRESERVE_SEP, 256, -1, true, null, false, 0, SEP_LABEL, PAYLOAD_SEP, END_BYTE, HOLE_CHARACTER);
+    this(analyzer, null, analyzer, EXACT_FIRST | PRESERVE_SEP, 256, -1, true, null, false, 0, SEP_LABEL, PAYLOAD_SEP, END_BYTE, HOLE_CHARACTER,new int[]{});
   }
 
   /**
@@ -192,7 +196,7 @@ public class XAnalyzingSuggester extends Lookup {
    * PRESERVE_SEP, 256, -1)}
    */
   public XAnalyzingSuggester(Analyzer indexAnalyzer, Analyzer queryAnalyzer) {
-    this(indexAnalyzer, null, queryAnalyzer, EXACT_FIRST | PRESERVE_SEP, 256, -1, true, null, false, 0, SEP_LABEL, PAYLOAD_SEP, END_BYTE, HOLE_CHARACTER);
+    this(indexAnalyzer, null, queryAnalyzer, EXACT_FIRST | PRESERVE_SEP, 256, -1, true, null, false, 0, SEP_LABEL, PAYLOAD_SEP, END_BYTE, HOLE_CHARACTER,new int[]{});
   }
 
   /**
@@ -212,12 +216,14 @@ public class XAnalyzingSuggester extends Lookup {
    *   no limit.
    */
   public XAnalyzingSuggester(Analyzer indexAnalyzer, Automaton queryPrefix, Analyzer queryAnalyzer, int options, int maxSurfaceFormsPerAnalyzedForm, int maxGraphExpansions,
-                             boolean preservePositionIncrements, FST<Pair<Long, BytesRef>> fst, boolean hasPayloads, int maxAnalyzedPathsForOneInput,
-                             int sepLabel, int payloadSep, int endByte, int holeCharacter) {
+                             boolean preservePositionIncrements, FST<Pair<IntsRef, BytesRef>> fst, boolean hasPayloads, int maxAnalyzedPathsForOneInput,
+                             int sepLabel, int payloadSep, int endByte, int holeCharacter,int[] scalar) {
       // SIMON EDIT: I added fst, hasPayloads and maxAnalyzedPathsForOneInput 
     this.indexAnalyzer = indexAnalyzer;
     this.queryAnalyzer = queryAnalyzer;
     this.fst = fst;
+    this.scalar = scalar;
+    this.weightsComparator = new WeightsComparator(scalar);
     this.hasPayloads = hasPayloads;
     if ((options & ~(EXACT_FIRST | PRESERVE_SEP)) != 0) {
       throw new IllegalArgumentException("options should only contain EXACT_FIRST and PRESERVE_SEP; got " + options);
@@ -509,8 +515,8 @@ public class XAnalyzingSuggester extends Lookup {
 
       reader = new OfflineSorter.ByteSequencesReader(tempSorted);
      
-      PairOutputs<Long,BytesRef> outputs = new PairOutputs<>(PositiveIntOutputs.getSingleton(), ByteSequenceOutputs.getSingleton());
-      Builder<Pair<Long,BytesRef>> builder = new Builder<>(FST.INPUT_TYPE.BYTE1, outputs);
+      PairOutputs<IntsRef,BytesRef> outputs = new PairOutputs<>(IntSequenceOutputs.getSingleton(), ByteSequenceOutputs.getSingleton());
+      Builder<Pair<IntsRef,BytesRef>> builder = new Builder<>(FST.INPUT_TYPE.BYTE1, outputs);
 
       // Build FST:
       BytesRef previousAnalyzed = null;
@@ -581,7 +587,7 @@ public class XAnalyzingSuggester extends Lookup {
         Util.toIntsRef(analyzed, scratchInts);
         //System.out.println("ADD: " + scratchInts + " -> " + cost + ": " + surface.utf8ToString());
         if (!hasPayloads) {
-          builder.add(scratchInts, outputs.newPair(cost, BytesRef.deepCopyOf(surface)));
+          builder.add(scratchInts, outputs.newPair(new IntsRef(new int[]{(int)cost},0,1), BytesRef.deepCopyOf(surface)));
         } else {
           int payloadOffset = input.getPosition() + surface.length;
           int payloadLength = scratch.length - payloadOffset;
@@ -590,7 +596,7 @@ public class XAnalyzingSuggester extends Lookup {
           br.bytes[surface.length] = (byte) payloadSep;
           System.arraycopy(scratch.bytes, payloadOffset, br.bytes, surface.length+1, payloadLength);
           br.length = br.bytes.length;
-          builder.add(scratchInts, outputs.newPair(cost, br));
+          builder.add(scratchInts, outputs.newPair(new IntsRef(new int[]{(int)cost},0,1), br));
         }
       }
       fst = builder.finish();
@@ -638,7 +644,7 @@ public class XAnalyzingSuggester extends Lookup {
   public boolean load(InputStream input) throws IOException {
     DataInput dataIn = new InputStreamDataInput(input);
     try {
-      this.fst = new FST<>(dataIn, new PairOutputs<>(PositiveIntOutputs.getSingleton(), ByteSequenceOutputs.getSingleton()));
+      this.fst = new FST<>(dataIn, new PairOutputs<>(IntSequenceOutputs.getSingleton(), ByteSequenceOutputs.getSingleton()));
       maxAnalyzedPathsForOneInput = dataIn.readVInt();
       hasPayloads = dataIn.readByte() == 1;
     } finally {
@@ -647,7 +653,7 @@ public class XAnalyzingSuggester extends Lookup {
     return true;
   }
 
-  private LookupResult getLookupResult(Long output1, BytesRef output2, CharsRef spare) {
+  private LookupResult getLookupResult(IntsRef output1, BytesRef output2, CharsRef spare) {
     LookupResult result;
     if (hasPayloads) {
       int sepIndex = -1;
@@ -664,11 +670,11 @@ public class XAnalyzingSuggester extends Lookup {
       BytesRef payload = new BytesRef(payloadLen);
       System.arraycopy(output2.bytes, sepIndex+1, payload.bytes, 0, payloadLen);
       payload.length = payloadLen;
-      result = new LookupResult(spare.toString(), decodeWeight(output1), payload);
+      result = new LookupResult(spare.toString(), calculateScore(output1,scalar), payload);
     } else {
       spare.grow(output2.length);
       UnicodeUtil.UTF8toUTF16(output2, spare);
-      result = new LookupResult(spare.toString(), decodeWeight(output1));
+      result = new LookupResult(spare.toString(), calculateScore(output1,scalar));
     }
 
     return result;
@@ -728,16 +734,16 @@ public class XAnalyzingSuggester extends Lookup {
 
       BytesReader bytesReader = fst.getBytesReader();
 
-      FST.Arc<Pair<Long,BytesRef>> scratchArc = new FST.Arc<>();
+      FST.Arc<Pair<IntsRef,BytesRef>> scratchArc = new FST.Arc<>();
 
       final List<LookupResult> results = new ArrayList<>();
 
-      List<FSTUtil.Path<Pair<Long,BytesRef>>> prefixPaths = FSTUtil.intersectPrefixPaths(convertAutomaton(lookupAutomaton), fst);
+      List<FSTUtil.Path<Pair<IntsRef,BytesRef>>> prefixPaths = FSTUtil.intersectPrefixPaths(convertAutomaton(lookupAutomaton), fst);
 
       if (exactFirst) {
 
         int count = 0;
-        for (FSTUtil.Path<Pair<Long,BytesRef>> path : prefixPaths) {
+        for (FSTUtil.Path<Pair<IntsRef,BytesRef>> path : prefixPaths) {
           if (fst.findTargetArc(endByte, path.fstNode, scratchArc, bytesReader) != null) {
             // This node has END_BYTE arc leaving, meaning it's an
             // "exact" match:
@@ -745,17 +751,18 @@ public class XAnalyzingSuggester extends Lookup {
           }
         }
 
+
         // Searcher just to find the single exact only
         // match, if present:
-        Util.TopNSearcher<Pair<Long,BytesRef>> searcher;
-        searcher = new Util.TopNSearcher<>(fst, count * maxSurfaceFormsPerAnalyzedForm, count * maxSurfaceFormsPerAnalyzedForm, weightComparator);
+        Util.TopNSearcher<Pair<IntsRef,BytesRef>> searcher;
+        searcher = new Util.TopNSearcher<>(fst, count * maxSurfaceFormsPerAnalyzedForm, count * maxSurfaceFormsPerAnalyzedForm,weightsComparator );
 
         // NOTE: we could almost get away with only using
         // the first start node.  The only catch is if
         // maxSurfaceFormsPerAnalyzedForm had kicked in and
         // pruned our exact match from one of these nodes
         // ...:
-        for (FSTUtil.Path<Pair<Long,BytesRef>> path : prefixPaths) {
+        for (FSTUtil.Path<Pair<IntsRef,BytesRef>> path : prefixPaths) {
           if (fst.findTargetArc(endByte, path.fstNode, scratchArc, bytesReader) != null) {
             // This node has END_BYTE arc leaving, meaning it's an
             // "exact" match:
@@ -763,7 +770,7 @@ public class XAnalyzingSuggester extends Lookup {
           }
         }
 
-        Util.TopResults<Pair<Long,BytesRef>> completions = searcher.search();
+        Util.TopResults<Pair<IntsRef,BytesRef>> completions = searcher.search();
 
         // NOTE: this is rather inefficient: we enumerate
         // every matching "exactly the same analyzed form"
@@ -777,7 +784,7 @@ public class XAnalyzingSuggester extends Lookup {
         // seach: it's bounded by how many prefix start
         // nodes we have and the
         // maxSurfaceFormsPerAnalyzedForm:
-        for(Result<Pair<Long,BytesRef>> completion : completions) {
+        for(Result<Pair<IntsRef,BytesRef>> completion : completions) {
           BytesRef output2 = completion.output.output2;
           if (sameSurfaceForm(utf8Key, output2)) {
             results.add(getLookupResult(completion.output.output1, output2, spare));
@@ -791,15 +798,15 @@ public class XAnalyzingSuggester extends Lookup {
         }
       }
 
-      Util.TopNSearcher<Pair<Long,BytesRef>> searcher;
-      searcher = new Util.TopNSearcher<Pair<Long,BytesRef>>(fst,
+      Util.TopNSearcher<Pair<IntsRef,BytesRef>> searcher;
+      searcher = new Util.TopNSearcher<Pair<IntsRef,BytesRef>>(fst,
                                                             num - results.size(),
                                                             num * maxAnalyzedPathsForOneInput,
-                                                            weightComparator) {
+                                                            weightsComparator) {
         private final Set<BytesRef> seen = new HashSet<>();
 
         @Override
-        protected boolean acceptResult(IntsRef input, Pair<Long,BytesRef> output) {
+        protected boolean acceptResult(IntsRef input, Pair<IntsRef,BytesRef> output) {
 
           // Dedup: when the input analyzes to a graph we
           // can get duplicate surface forms:
@@ -828,13 +835,13 @@ public class XAnalyzingSuggester extends Lookup {
 
       prefixPaths = getFullPrefixPaths(prefixPaths, lookupAutomaton, fst);
       
-      for (FSTUtil.Path<Pair<Long,BytesRef>> path : prefixPaths) {
+      for (FSTUtil.Path<Pair<IntsRef,BytesRef>> path : prefixPaths) {
         searcher.addStartPaths(path.fstNode, path.output, true, path.input);
       }
 
-      TopResults<Pair<Long,BytesRef>> completions = searcher.search();
+      TopResults<Pair<IntsRef,BytesRef>> completions = searcher.search();
 
-      for(Result<Pair<Long,BytesRef>> completion : completions) {
+      for(Result<Pair<IntsRef,BytesRef>> completion : completions) {
 
         LookupResult result = getLookupResult(completion.output.output1, completion.output.output2, spare);
 
@@ -873,16 +880,16 @@ public class XAnalyzingSuggester extends Lookup {
   @Override
   public boolean load(DataInput input) throws IOException {
     count = input.readVLong();
-    this.fst = new FST<>(input, new PairOutputs<>(PositiveIntOutputs.getSingleton(), ByteSequenceOutputs.getSingleton()));
+    this.fst = new FST<>(input, new PairOutputs<>(IntSequenceOutputs.getSingleton(), ByteSequenceOutputs.getSingleton()));
     maxAnalyzedPathsForOneInput = input.readVInt();
     hasPayloads = input.readByte() == 1;
     return true;
   }
 
     /** Returns all completion paths to initialize the search. */
-  protected List<FSTUtil.Path<Pair<Long,BytesRef>>> getFullPrefixPaths(List<FSTUtil.Path<Pair<Long,BytesRef>>> prefixPaths,
+  protected List<FSTUtil.Path<Pair<IntsRef,BytesRef>>> getFullPrefixPaths(List<FSTUtil.Path<Pair<IntsRef,BytesRef>>> prefixPaths,
                                                                        Automaton lookupAutomaton,
-                                                                       FST<Pair<Long,BytesRef>> fst)
+                                                                       FST<Pair<IntsRef,BytesRef>> fst)
     throws IOException {
     return prefixPaths;
   }
@@ -947,28 +954,63 @@ public class XAnalyzingSuggester extends Lookup {
   public static int decodeWeight(long encoded) {
     return (int)(Integer.MAX_VALUE - encoded);
   }
-  
+
+  public static int calculateScore(IntsRef output,int[] scalar) {
+      long result = 0,currentScalar = 1;
+      for (int i=0;i<output.length;i++) {
+          if (scalar.length > i) {
+              currentScalar = scalar[i];
+          }else {
+              currentScalar = 1;
+          }
+          result += output.ints[i] * currentScalar;
+      }
+      if (result > Integer.MAX_VALUE) return Integer.MAX_VALUE;
+      return (int)result;
+  }
+
   /** weight -> cost */
   public static int encodeWeight(long value) {
     if (value < 0 || value > Integer.MAX_VALUE) {
       throw new UnsupportedOperationException("cannot encode value: " + value);
     }
-    return Integer.MAX_VALUE - (int)value;
+    return (int)value;
   }
-   
-  static final Comparator<Pair<Long,BytesRef>> weightComparator = new Comparator<Pair<Long,BytesRef>> () {
-    @Override
-    public int compare(Pair<Long,BytesRef> left, Pair<Long,BytesRef> right) {
-      return left.output1.compareTo(right.output1);
+    static class WeightsComparator implements Comparator<Pair<IntsRef,BytesRef>> {
+        private int[] scalar;
+        private int[] noOutput;
+        @Override
+        public int compare(Pair<IntsRef, BytesRef> left, Pair<IntsRef, BytesRef> right) {
+            int calculatedLeft=0,calculatedRight = 0;
+            int[] leftArr = left.output1.ints,rightArr=right.output1.ints;
+            if (left.output1.ints.length == 0 ) {
+                if (right.output1.ints.length == 0) {
+                    return 0;
+                }
+                leftArr = noOutput;
+            } else if (right.output1.ints.length == 0) {
+                rightArr = noOutput;
+            }
+            for (int i=0;i<left.output1.length;i++) {
+                calculatedLeft += leftArr[i] * scalar[i];
+                calculatedRight += rightArr[i] * scalar[i];
+            }
+
+            return calculatedLeft < calculatedRight ? -1 : (calculatedLeft == calculatedRight ? 0 : 1);
+        }
+
+        public WeightsComparator(int[] scalar){
+            this.scalar = scalar;
+            this.noOutput = new int[scalar.length];
+            Arrays.fill(this.noOutput,0);
+        }
     }
-  };
-  
   
     public static class XBuilder {
-        private Builder<Pair<Long, BytesRef>> builder;
+        private Builder<Pair<IntsRef, BytesRef>> builder;
         private int maxSurfaceFormsPerAnalyzedForm;
         private IntsRef scratchInts = new IntsRef();
-        private final PairOutputs<Long, BytesRef> outputs;
+        private final PairOutputs<IntsRef, BytesRef> outputs;
         private boolean hasPayloads;
         private BytesRef analyzed = new BytesRef();
         private final SurfaceFormAndPayload[] surfaceFormsAndPayload;
@@ -978,7 +1020,7 @@ public class XAnalyzingSuggester extends Lookup {
 
         public XBuilder(int maxSurfaceFormsPerAnalyzedForm, boolean hasPayloads, int payloadSep) {
             this.payloadSep = payloadSep;
-            this.outputs = new PairOutputs<>(PositiveIntOutputs.getSingleton(), ByteSequenceOutputs.getSingleton());
+            this.outputs = new PairOutputs<>(IntSequenceOutputs.getSingleton(), ByteSequenceOutputs.getSingleton());
             this.builder = new Builder<>(FST.INPUT_TYPE.BYTE1, outputs);
             this.maxSurfaceFormsPerAnalyzedForm = maxSurfaceFormsPerAnalyzedForm;
             this.hasPayloads = hasPayloads;
@@ -992,30 +1034,35 @@ public class XAnalyzingSuggester extends Lookup {
         
         private final static class SurfaceFormAndPayload implements Comparable<SurfaceFormAndPayload> {
             BytesRef payload;
-            long weight;
+            int[] weights;
             
-            public SurfaceFormAndPayload(BytesRef payload, long cost) {
+            public SurfaceFormAndPayload(BytesRef payload, int[] costs) {
                 super();
                 this.payload = payload;
-                this.weight = cost;
+                this.weights = costs;
             }
 
             @Override
             public int compareTo(SurfaceFormAndPayload o) {
-                int res = compare(weight, o.weight);
-                if (res == 0 ){
-                    return payload.compareTo(o.payload);
+                for (int i=0; i < o.weights.length;i++) {
+                    if (o.weights[i] != weights[i]) {
+                        return weights[i] < o.weights[i] ? -1:1;
+                    }
                 }
-                return res;
+                return payload.compareTo(o.payload);
+
             }
             public static int compare(long x, long y) {
                 return (x < y) ? -1 : ((x == y) ? 0 : 1);
             }
         }
 
-        public void addSurface(BytesRef surface, BytesRef payload, long cost) throws IOException {
+        public void addSurface(BytesRef surface, BytesRef payload, long[] costs) throws IOException {
             int surfaceIndex = -1;
-            long encodedWeight = cost == -1 ? cost : encodeWeight(cost);
+            int[] encodedWeights = new int[costs.length];
+            for (int i=0;i < costs.length; i++) {
+                encodedWeights[i] = costs[i] == -1 ? -1 : encodeWeight(costs[i]);
+            }
             /*
              * we need to check if we have seen this surface form, if so only use the 
              * the surface form with the highest weight and drop the rest no matter if 
@@ -1030,9 +1077,6 @@ public class XAnalyzingSuggester extends Lookup {
             if (count > 0 && seenSurfaceForms.containsKey(surface)) {
                 surfaceIndex = seenSurfaceForms.lget();
                 SurfaceFormAndPayload surfaceFormAndPayload = surfaceFormsAndPayload[surfaceIndex];
-                if (encodedWeight >= surfaceFormAndPayload.weight) {
-                    return;
-                }
                 surfaceCopy = BytesRef.deepCopyOf(surface);
             } else {
                 surfaceIndex = count++;
@@ -1053,10 +1097,10 @@ public class XAnalyzingSuggester extends Lookup {
                 payloadRef = br;
             }
             if (surfaceFormsAndPayload[surfaceIndex] == null) {
-                surfaceFormsAndPayload[surfaceIndex] = new SurfaceFormAndPayload(payloadRef, encodedWeight);
+                surfaceFormsAndPayload[surfaceIndex] = new SurfaceFormAndPayload(payloadRef, encodedWeights);
             } else {
                 surfaceFormsAndPayload[surfaceIndex].payload = payloadRef;
-                surfaceFormsAndPayload[surfaceIndex].weight = encodedWeight;
+                surfaceFormsAndPayload[surfaceIndex].weights = encodedWeights;
             }
         }
         
@@ -1069,14 +1113,21 @@ public class XAnalyzingSuggester extends Lookup {
                 analyzed.bytes[analyzed.offset + analyzed.length - 1 ] = (byte) deduplicator++;
                 Util.toIntsRef(analyzed, scratchInts);
                 SurfaceFormAndPayload candiate = surfaceFormsAndPayload[i];
-                long cost = candiate.weight == -1 ? encodeWeight(Math.min(Integer.MAX_VALUE, defaultWeight)) : candiate.weight;
-                builder.add(scratchInts, outputs.newPair(cost, candiate.payload));
+                int encodedDefault = encodeWeight(Math.min(Integer.MAX_VALUE, defaultWeight));
+                for (int j=0;j<candiate.weights.length;j++) {
+                    if (candiate.weights[j] == -1) {
+                        candiate.weights[j] = encodedDefault;
+                    }
+
+                }
+                builder.add(scratchInts, outputs.newPair(new IntsRef(candiate.weights,0,candiate.weights.length)
+                        , candiate.payload));
             }
             seenSurfaceForms.clear();
             count = 0;
         }
 
-        public FST<Pair<Long, BytesRef>> build() throws IOException {
+        public FST<Pair<IntsRef, BytesRef>> build() throws IOException {
             return builder.finish();
         }
 

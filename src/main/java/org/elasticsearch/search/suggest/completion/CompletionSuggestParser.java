@@ -32,7 +32,10 @@ import org.elasticsearch.search.suggest.SuggestionSearchContext;
 import org.elasticsearch.search.suggest.context.ContextMapping.ContextQuery;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import static org.elasticsearch.search.suggest.SuggestUtils.parseSuggestContext;
 
@@ -53,9 +56,11 @@ public class CompletionSuggestParser implements SuggestContextParser {
         XContentParser.Token token;
         String fieldName = null;
         CompletionSuggestionContext suggestion = new CompletionSuggestionContext(completionSuggester);
-        
+        CompletionFieldMapper mapper = null;
+
         XContentParser contextParser = null;
-        
+
+
         while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
             if (token == XContentParser.Token.FIELD_NAME) {
                 fieldName = parser.currentName();
@@ -64,9 +69,12 @@ public class CompletionSuggestParser implements SuggestContextParser {
                     if (token == XContentParser.Token.VALUE_BOOLEAN && "fuzzy".equals(fieldName)) {
                         suggestion.setFuzzy(parser.booleanValue());
                     }
+                } else {
+                    suggestion.mapper((CompletionFieldMapper)mapperService.smartNameFieldMapper(suggestion.getField()));
+                    mapper = suggestion.mapper();
                 }
             } else if (token == XContentParser.Token.START_OBJECT) {
-                if("fuzzy".equals(fieldName)) {
+                if ("fuzzy".equals(fieldName)) {
                     suggestion.setFuzzy(true);
                     String fuzzyConfigName = null;
                     while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
@@ -86,24 +94,54 @@ public class CompletionSuggestParser implements SuggestContextParser {
                             }
                         }
                     }
-                } else if("context".equals(fieldName)) {
+                } else if ("context".equals(fieldName)) {
                     // Copy the current structure. We will parse, once the mapping is provided
                     XContentBuilder builder = XContentFactory.contentBuilder(parser.contentType());
                     builder.copyCurrentStructure(parser);
-                    BytesReference bytes = builder.bytes();               
+                    BytesReference bytes = builder.bytes();
                     contextParser = parser.contentType().xContent().createParser(bytes);
                 } else {
                     throw new ElasticsearchIllegalArgumentException("suggester [completion] doesn't support field [" + fieldName + "]");
                 }
+            } else if("scalar".equals(fieldName)){
+                if (mapper == null) {
+                    throw new ElasticsearchIllegalArgumentException("suggester [completion] field[field] must come before field[scalar]");
+                }
+                Map<String,Integer> scalarMap = mapper.getScalarMap();
+                int[] scalar = new int[scalarMap.size()];
+                Arrays.fill(scalar, 0);
+                if (token == XContentParser.Token.START_ARRAY) {
+                    int index = 0;
+                    while ((token = parser.nextToken()) != XContentParser.Token.END_ARRAY) {
+                        if (token == XContentParser.Token.VALUE_NUMBER) {
+                            if (index >= scalar.length) {
+                                throw new ElasticsearchIllegalArgumentException("suggester [completion] too many values in scalar, expected ["+ scalar.length+ "]");
+                            }
+                            scalar[index] = parser.intValue();
+                        } else if (token == XContentParser.Token.VALUE_STRING) {
+                            String scalarName = parser.text();
+                            if (scalarMap.containsKey(scalarName)) {
+                                scalar[scalarMap.get(scalarName)] = 1;
+                            }
+                        }
+                        index++;
+                    }
+                    suggestion.setScalar(scalar);
+                } else {
+                    throw new ElasticsearchIllegalArgumentException("suggester[completion]  expected scalar to be an array");
+                }
+
             } else {
                 throw new ElasticsearchIllegalArgumentException("suggester[completion]  doesn't support field [" + fieldName + "]");
             }
         }
-        
-        suggestion.mapper((CompletionFieldMapper)mapperService.smartNameFieldMapper(suggestion.getField()));
 
-        CompletionFieldMapper mapper = suggestion.mapper();
         if (mapper != null) {
+            if (suggestion.getScalar() == null) {
+                int[] scalar = new int[ mapper.getScalarMap().size()];
+                Arrays.fill(scalar,1);
+                suggestion.setScalar(scalar);
+            }
             if (mapper.requiresContext()) {
                 if (contextParser == null) {
                     throw new ElasticsearchIllegalArgumentException("suggester [completion] requires context to be setup");

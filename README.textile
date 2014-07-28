@@ -1,4 +1,91 @@
-h1. Elasticsearch
+h1. Kontera modified Elasticsearch for Autocomplete
+
+This fork of Elasticsearch allows using autocomplete with multiple weights, and a scalar.
+
+You provide a "scalar map" when creating the suggester, with strings signifying weight labels.
+You can then put documents with weights using the previous values.
+And when requesting a suggestion you can send which labels should be used to calculate weights by sending an array of labels in "scalar".
+
+see the following examples for usage:
+
+<pre>
+curl -X PUT localhost:9200/test4 -d '{
+    "settings" : {
+        "index" : {
+            "number_of_shards" : 1,
+            "number_of_replicas" : 1
+        },
+        "analysis" : {
+            "filter" : {
+                "special_chars_filter" : {
+                    "type" : "word_delimiter",
+                    "type_table": ["# => ALPHA", "@ => ALPHA", "& => ALPHA", "* => ALPHA"]
+                }
+            },
+            "analyzer" : {
+                "autocomplete_analyzer" : {
+                    "type" : "custom",
+                    "tokenizer" : "whitespace",
+                    "filter" : ["lowercase", "special_chars_filter"]
+                }
+            }
+        }
+    },
+    "mappings" : {
+        "phrases" : {
+            "_ttl" : { "enabled" : true, "default" : "3d" },
+            "properties" : {
+            "name" : { "type" : "string" },
+            "suggest" : { "type" : "completion",
+                          "index_analyzer" : "autocomplete_analyzer",
+                          "search_analyzer" : "autocomplete_analyzer",
+                          "payloads" : true,
+                          "scalar_map" : ["121","232"],
+                          "context": {
+                             "topics": {
+                                 "type": "category"
+                              }
+                           }
+                       }
+             }
+         }
+    }
+}'
+
+curl -X PUT localhost:9200/test4/phrases/1 -d '{
+    "suggest" : {
+        "input" : "first",
+        "output": "First",
+	"weight": [100,1],
+	"payload": {"keyword_id":1235},
+	"context":{"topics":[1,2,3]}
+    }
+}'
+
+curl -X PUT localhost:9200/test4/phrases/2 -d '{
+    "suggest" : {
+        "input" : "fir",
+        "output": "fir",
+	"weight": {"121":1,"232":50},
+	"payload": {"keyword_id":6342},
+	"context":{"topics":[1,2,3]}
+    }
+}'
+
+
+curl -X POST 'localhost:9200/test4/_suggest?pretty' -d '{
+    "suggest" : {
+	"text":"f",
+	"completion":{
+        	"field": "suggest",
+                "size": 10,
+                "scalar": ["121"],
+        	"fuzzy": {"fuzziness":"AUTO"},
+	        "context":{"topics":[1,2,3]}
+        }
+    }
+}'
+</pre>
 
 h2. A Distributed RESTful Search Engine
 
